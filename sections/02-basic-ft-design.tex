@@ -1,0 +1,293 @@
+\section{基本 FT 设计}
+
+\insertfigureone
+
+Figure 1展示了我们用于fault-tolerant VM的系统基本设置。%
+对于一个希望提供fault tolerance能力的VM（primary VM），%
+我们会在另一台物理服务器上运行一个backup VM，使它保持同步，%
+并以与primary VM完全相同的方式执行，只是有很小的时间滞后。%
+我们称这两个VM处于virtual lockstep\emph{(译者认为可以称为%
+“步调一致”)}状态。VM的virtual disk位于%
+shared storage上（例如Fibre Channel或iSCSI disk %
+array），因此primary VM和backup VM都可以访问这些磁盘以进行输%
+入和输出（我们将在section 4.1讨论一种primary VM和backup VM使用独%
+立的非共享virtual disk的设计）。只有primary VM会在网络上宣告自%
+己的存在，因此所有network input\emph{(译者注：网络报文)}都%
+会到达primary VM。类似地，所有其他输入（例如键盘和鼠标）也只%
+会到达primary VM。\emph{(译者注：如果通过VNC连接VM内的Linux%
+那么键盘和鼠标也算network input；当然vSphere Web Console/VMRC的控制台%
+会直接向VM的虚拟键盘/鼠标设备注入事件，因此确实存在%
+keyboard/mouse input。VMware官方资料也明确讨论了Web Console%
+和VMRC中的键鼠事件。读者可以暂时不感知keyboard/mouse，就假设咱们%
+只能VNC，通篇论文只关注网络和磁盘相关即可)}%
+
+primary VM收到的所有输入都会通过一条称为logging channel的%
+网络连接发送给backup VM。%
+对于服务器的工作负载而言，主要的输入流量来自网络和磁盘。如下文section 2.1所述，%
+为了确保backup VM与primary VM以相同的方式执行%
+non-deterministic operation，必要时还会传输额外信息
+\emph{(这里后续会提到，backup不接收自己机器上的timer中断，也不会%
+收到来自外界的报文，而是通过logging channel稍带这些信息，使得%
+它们被插入到和primary VM相同的执行点，以消除状态偏移)}。%
+结果是，backup VM始终以与primary VM完全相同的方式执行。%
+
+不过，backup VM的输出会被hypervisor丢弃，%
+因此只有primary VM会产生实际输出并返回给客户端。如section 2.2所述，%
+primary VM和backup VM遵循一个特定协议，其中包括backup VM的%
+显式acknowledgment，以确保primary VM failure时不会丢%
+失数据。%
+\\\emph{译者注：“丢数据”指的是primary已经对外产生了某个可见结果，%
+但backup没有收到足够的log来重放到这个结果对应的状态。}%
+
+为了检测primary VM或backup VM是否已经发生故障，我们的%
+系统结合使用了两种机制：相关服务器之间的心跳检测，以及%
+对logging channel上流量的监控。除此之外，即使出现%
+primary服务器和backup彼此失去通信的这种脑裂情况，%
+\emph{(译者注：常见的一种脑裂情况是两台服务器分区，彼此%
+无法通讯，后面两台机器都认为自己是primary)}%
+我们也必须确保primary VM和backup VM中只有一个会接管执行。%
+
+在下面各节中，我们将对几个重要方面给出更多细节。在section 2.1，%
+我们给出deterministic replay技术的一些细节，%
+该技术通过logging channel发送的信息确保primary VM和%
+backup VM保持同步。在section 2.2，我们描述FT协议的一条基本规则，%
+它确保primary VM failure时不会丢失数据。在section 2.3，%
+我们描述用于以正确方式检测并响应failure的方法。
+
+\subsection{deterministic replay的实现}
+
+如前所述，复制服务器（或VM）的执行可以被建模为复制一个%
+deterministic state-machine。如果两个%
+deterministic state-machine从相同的初始状态开始，%
+并以相同顺序获得完全相同的输入，那么它们将经历相同的状态序列，并产生相同的输出。%
+VM具有广泛的input集合，包括传入的network packet、disk read，%
+以及来自键盘和鼠标的input。%
+non-deterministic event（例如virtual interrupt）%
+和non-deterministic operation（例如%
+读取处理器的时钟周期计数器）也会影响VM的状态。%
+由于VM可能运行任意操作系统和任意工作负载\emph{(译者注：不能假定VM只运行%
+类似“纯计算”的任务，也得考虑是否会读取系统时间，或者进行某些依赖系统%
+时间片的工作。实际上network就是这样的工作，tcp协议其实内部会依赖定时器)}，%
+这为VM的执行带来了三个挑战：（1）正确捕获保证%
+backup VM deterministic execution所需的所有输入和%
+non-determinism；（2）正确地把这些输入和%
+non-determinism应用到backup VM；（3）%
+以不降低性能的方式做到这一点。此外，x86微处理器中的许多复杂操作%
+具有未定义的、因而也是non-deterministic的副作用。%
+捕获这些未定义副作用并replay它们以产生相同状态，是另一个挑战。%
+
+VMware deterministic replay[15]正是为VMware %
+vSphere平台上的x86 VM提供了这种功能。%
+deterministic replay会把VM的输入以及与VM执行相关的所有可能%
+的non-determinism，record为一串log entry并写入log %
+file。之后通过读取文件中的log entry，可以精确replay VM的执行。%
+对于non-deterministic operation，%
+会记录足够的信息，使该操作能够以相同的状态变化和输出被复现。%
+对于timer interrupt或IO完成interrupt等%
+non-determinism事件，还会record事件发生时的精确指令。%
+在replay期间，该事件会在指令流中的同一位置被投递。%
+VMware deterministic replay实现了一种高效的事件%
+record和事件投递机制，采用了多种技术，包括与AMD[2]和Intel[8]%
+共同开发的硬件性能计数器。%
+
+Bressoud和Schneider[3]提到把VM的执行划分为若干epoch，%
+诸如interrupt这样的non-deterministic event只在一个%
+epoch结束时投递。epoch的概念似乎被用作一种批处理机制，%
+因为在事件发生的精确指令处分别投递每个interrupt成本太高。然而，%
+我们的事件投递机制足够高效，因此VMware deterministic replay%
+不需要使用epoch。每个interrupt都会在发生时被记录，%
+并在replay时高效地投递到适当的指令处。
+\\\emph{译者注：先简要描述Bressoud和Schneider的epoch机制。%
+该系统同样采用primary/backup架构，两台机器上都有一种特殊寄存器，%
+该寄存器会在每执行完一条指令后递减一次；当其变为负数时，%
+处理器会触发一个控制中断，使hypervisor重新获得控制权。%
+例如，如果将该寄存器设置为1000，那么按照字面语义，VM会在%
+执行完1001条指令后结束当前epoch，并陷入由该特殊寄存器触发的%
+控制中断。此时hypervisor可以统一处理本epoch内缓存起来的%
+普通VM中断。这里的普通VM中断，是指timer interrupt、I/O完成%
+interrupt、network interrupt等guestOS正常运行时会看到的中断，%
+它们不同于用于结束epoch的控制中断。%
+\\对于primary和backup来说，它们从相同状态启动，并且各自的%
+hypervisor都会将该特殊寄存器设置为相同的值，例如1000。%
+在一个epoch内，primary收到的普通VM中断不会立即投递给%
+primary VM，而是先由primary hypervisor记录并缓存起来；%
+backup本机收到的普通VM中断也不会直接投递给backup VM，%
+而是由backup hypervisor丢弃。%
+primary VM和backup VM会执行对应的epoch，但backup至少落后primary%
+一个epoch。当primary的epoch结束时，primary hypervisor把本epoch内%
+缓存的普通VM中断列表发送给backup，并等待ack。backup执行到对应epoch%
+边界后，等待并接收该中断列表，先向primary返回ack，再向backup VM投递%
+同一批中断。primary收到ack后，才在自己的epoch边界向primary VM投递%
+这批中断；随后双方分别进入下一个对应的epoch。}%
+
+\subsection{FT协议}
+
+\insertfiguretwo
+
+对于VMware FT，我们使用deterministic replay来生成必要的日志条目，%
+用来记录primary VM的执行过程。%
+但我们不是把这些log entry写入磁盘，而是通过logging channel把%
+它们发送给backup VM。%
+backup VM会实时replay这些log entry，%
+因此以与primary VM完全相同的方式执行。不过，为了确保真正实现fault %
+tolerance，我们必须在logging channel上的log entry之%
+外增加严格的FT协议。我们的基本要求如下：%
+
+\begin{quote}
+\noindent\textbf{Output Requirement:} 如果backup VM在primary VM %
+failure后take over，那么backup VM将继续以一种完全符合%
+primary VM已经发送到外部世界的所有输出的方式执行。%
+\end{quote}
+
+\noindent 注意，在发生failover之后（也就是backup VM在primary VM %
+failure后take over之后），由于执行过程中会发生许多%
+non-deterministic event，backup VM很可能开始以一种与%
+primary VM原本继续执行时非常不同的方式执行。%
+不过，只要backup VM满足\textbf{Output Requirement}，%
+在failover到backup VM的过程中就不会丢失任何外部可见的状态或数据，%
+客户端也不会察觉服务中断或不一致。%
+
+\textbf{Output Requirement}可以通过delay任何外部输出%
+（通常是一个网络包）来保证，直到backup VM已经接收到所有%
+必要信息，使其能够至少将执行重放到该输出操作发生的位置。%
+一个必要条件是，backup VM必须已经接收到该输出操作之前生%
+成的所有日志条目。这些日志条目将使它能够执行到最后一个日志%
+条目所在的位置。然而，假设primary VM在执行完输出操作后立即发生%
+故障，backup VM就必须知道自己必须继续replay，直到该输出操%
+作的位置，并且\textbf{只能在那个位置“上线”}（也就是停止重放，并接%
+管成为primary VM，见section 2.3）。如果备份虚拟机在输出操作之%
+前的最后一个日志条目处就上线(go live)，那么某些non-deterministic event%
+（例如传递给VM的timer interrupt）可能会在它执行该输出%
+操作之前改变它的执行路径。
+
+
+在上述约束下，强制执行\textbf{Output Requirement}最简单的方法，%
+是在每个output operation处创建一个特殊的log entry。于是，%
+\textbf{Output Requirement}可以通过下面这条具体规则来强制执行：%
+
+\begin{quote}
+\noindent\textbf{Output Rule:} 在backup VM收到并acknowledge与产生该%
+output的操作相关联的log entry之前，primary VM不得向外部世界发送该输出。%
+\end{quote}
+
+如果backup VM已经收到所有log entry，包括产生输出的操作对应的log %
+entry，那么backup VM就能够精确复现primary VM在该输出点处的状%
+态；因此，如果primary VM死亡，backup VM将正确到达一个与该输出一致%
+的状态。相反，如果backup VM在没有收到所有必要log entry的情况下%
+take over，那么它的状态可能很快发散，导致与primary VM的输出不一致%
+。\textbf{Output Rule}在某种程度上类似于[11]中描述的方法，%
+其中“外部同步”的IO实际上可以被缓冲，只要它在下一次外部通信之前确实写入磁盘即%
+可。%
+
+注意，\textbf{Output Rule}并没有要求停止primary VM的执行。%
+我们只需要delay发送输出，而VM本身可以继续执行\emph{(译者注：
+这也是为什么这个系统能较少地影响机器性能的部分原因)}。由于操作系统使用非阻塞的网%
+络和磁盘输出，并通过异步interrupt表示完成，VM可以很容易继续执行，%
+并且不一定会立即受到输出delay的影响。相比之下，以前的工作[3, 9]通常指%
+出，primary VM在执行输出之前必须完全停止，直到backup VM %
+acknowledge已收到来自primary VM的所有必要信息。\emph{
+(译者注：比如前面的epoch，primary和backup都会停在执行完某个epoch
+之后，然后这里会暂停primary VM，等到交互完成后双方才能继续执行。
+因此这个系统虽然是“批处理”思想的系统，但也是性能损失较大的)}%
+
+作为示例，我们在Figure 2中展示了一张说明FT协议要求的图。该图展示了%
+primary VM和backup VM上事件的时间线。从primary VM线指向%
+backup VM线的箭头表示log entry的传输，从backup VM线指向%
+primary VM线的箭头表示acknowledgment。异步事件、%
+输入和output operation的信息都必须作为log entry发送到%
+backup VM，并得到acknowledgment。如图所示，%
+到外部世界的输出会被delay，直到primary VM收到backup VM的%
+acknowledgment，表明backup VM已经收到与该output %
+operation相关联的log entry。%
+只要遵循Output Rule，backup VM就能够以一种与primary VM最%
+后一次输出一致的状态take over。%
+
+我们无法保证在failover场景中所有输出都恰好产生一次。%
+如果在primary VM打算发送输出时不使用带two-phase commit的%
+transaction，backup VM就无法判断primary VM是在发送最后%
+一个输出之前还是之后崩溃。幸运的是，network infrastructure（%
+包括TCP的常见使用方式）本来就是为了处理丢失包和相同的（重复）包而设计的。%
+注意，primary VM的传入包也可能在primary VM failure期间丢失%
+，因此不会被投递到backup VM。不过，传入包可能因为许多与服务器%
+failure无关的原因被丢弃，因此network infrastructure、%
+操作系统和应用都被编写成能够补偿丢包。%
+\\\emph{译者注：
+\\这里并不能保证packet恰好发送一次。primary可能在最后一个packet%
+真正发出之前或之后failure，因此客户端可能观察到丢包或重复包。%
+Output Rule保证的是：只要某个输出已经对外可见，backup就拥有足够的%
+log，可以在failover后到达与该输出一致的状态。TCP等网络协议本来就会%
+处理丢包、重复和乱序，因此FT层不需要判断最后一个packet究竟是否发出。%
+磁盘I/O不能完全依赖这种网络协议语义，相关处理见section 3.4。}%
+
+\subsection{检测并响应failure}
+
+如上所述，如果另一个VM看起来已经failure，primary VM和%
+backup VM必须快速响应。如果backup VM failure，%
+primary VM将go live，也就是离开recording mode（因此停止%
+在logging channel上发送log entry）并开始正常执行%
+\emph{(译者注：实际上这里go live上线用词不妥，它的意思%
+仅仅是退出recording mode，变成独立运行/不受保护的模式，%
+并不代表之前就不是“live”的)}。%
+如果primary VM failure，backup VM也应类似地go live，%
+但这个过程稍微复杂一些。由于backup VM的执行存在滞后，%
+它很可能已经接收并acknowledge了若干log entry，%
+但由于尚未到达执行中的相应位置，这些log entry还没有被消费而被%
+堆积。backup VM须继续执行并消费日志，直到最后一条log entry被重放，%
+此时，backup VM将停止replay模式，并开始作为普通VM执行。%
+本质上，backup VM已被提升为primary VM（但此时它缺少一个backup VM）。%
+由于它不再是backup VM，新的primary VM现在会在guest OS执行%
+output operation时向外部世界产生输出。在切换到正常模式期间，%
+可能需要进行一些设备相关的操作，才能使这些输出正确发生。特别是对于网络，%
+VMware FT会自动在网络上宣告新primary VM的MAC地址，%
+使物理网络交换机知道新primary VM位于哪台服务器\emph{(%
+译者注：这样后续来自客户端的网络报文才能继续被处理)}。此外，%
+新提升的primary VM可能需要重新发出一些磁盘IO（如section 3.4所述）。%
+
+尝试检测primary VM和backup VM failure的方法有很多。%
+VMware FT使用运行fault-tolerant VM的服务器之间的UDP %
+heartbeat来检测某台服务器是否可能已经崩溃。此外，%
+VMware FT会监控从primary VM发送到backup VM的logging %
+traffic，以及从backup VM发送到primary VM的%
+acknowledgment。由于有定期的timer interrupt，%
+对于正常运行的guest OS，logging traffic应当是规律的，%
+且不会停止。因此，log entry或acknowledgment的流动停止可能表%
+明某个VM发生failure。如果heartbeat或logging %
+traffic停止超过某个特定超时时间（大约几秒），就会宣布发生failure。%
+
+然而，任何这样的failure detection方法都容易受到%
+split-brain问题的影响。如果backup服务器停止接收来自primary%
+服务器的heartbeat，这可能表示primary服务器已经failure，%
+也可能只是表示仍在正常运行的服务器之间失去了所有网络连通性%
+\emph{(译者注：也就是backup和primary发生分区，互相无法ping%
+到对方，UDP的heartbeat心跳包也发不过去，都认为对方死亡)}。%
+如果此时backup VM go live，而primary VM实际上仍在运行，%
+那么很可能发生数据损坏，并给与VM通信的客户端带来问题。因此，%
+当检测到failure时，我们必须确保primary VM和backup VM中只有%
+一个go live。为了避免split-brain问题，我们利用存储VM %
+virtual disk的shared storage。当primary VM或%
+backup VM想要go live时，它会在shared storage上执行一个%
+atomic的test-and-set操作。如果操作成功，该VM就被允许go live%
+。如果操作失败，那么另一个VM一定已经go live，因此当前VM实际上会停止自身%
+（“自杀”）。如果VM在尝试执行该atomic操作时无法访问shared %
+storage，那么它只会等待，直到可以访问为止。注意，%
+如果shared storage由于存储网络中的某种failure而不可访问，%
+那么该VM很可能无论如何都无法做有用工作，因为virtual disk位于同一个%
+shared storage上。因此，使用shared storage解决%
+split-brain情况不会引入额外的不可用性。%
+\\\emph{译者注：论文中的shared storage不是由guestOS%
+直接访问的网络盘，也不是挂载在guestOS文件系统层中的%
+对象。它通常是hypervisor层可以共同访问%
+的共享存储，例如SAN、iSCSI、FC或NFS datastore。%
+VM的virtual disk存放在该shared storage上，%
+hypervisor再把这个virtual disk模拟成一块普通磁%
+盘设备呈现给guestOS。guestOS看到的是类似/dev/sda%
+这样的本地块设备，并在其上挂载自己的文件系统；但真正%
+把虚拟磁盘I/O映射到sharedstorage读写的是%
+hypervisor/VMkernel，而不是guestOS的网络栈。
+\\可见test-and-set的操作也是guestOS无感知的，%
+完全由hypervisor层进行。}%
+
+设计的最后一个方面是，一旦发生failure并且其中一个VM已经go live，%
+VMware FT会通过在另一台host上启动新的backup VM来自动恢复冗余。%
+虽然大多数先前工作没有覆盖这个过程，但它对于使fault-tolerant VM真%
+正有用是根本性的，并且需要仔细设计。更多细节见section 3.1。

@@ -1,0 +1,115 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[top=0.70in,bottom=0.78in,left=0.72in,right=0.72in,
+            columnsep=0.28in]{geometry}
+\usepackage{iftex}
+\ifXeTeX
+  \usepackage[UTF8,fontset=fandol]{ctex}
+  \usepackage{fontspec}
+  \setmainfont{Times New Roman}
+  \CJKsetecglue{}
+  \xeCJKsetup{CJKglue={\hskip 0pt}}
+\else
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{times}
+\fi
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{fvextra}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titling}
+\usepackage{indentfirst}
+
+\captionsetup{font=small,labelfont=bf}
+\renewcommand{\figurename}{Figure}
+\renewcommand{\tablename}{Table}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0.35em}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{7pt plus 2pt minus 2pt}
+\setlength{\intextsep}{7pt plus 2pt minus 2pt}
+\tolerance=1400
+\emergencystretch=2em
+\raggedbottom
+\renewcommand{\thesection}{\arabic{section}.}
+\renewcommand{\thesubsection}{\arabic{section}.\arabic{subsection}}
+\makeatletter
+\renewcommand\section{\@startsection{section}{1}{\z@}%
+  {-2.0ex plus -0.5ex minus -0.2ex}%
+  {0.7ex plus 0.2ex}%
+  {\normalfont\large\bfseries\raggedright}}
+\makeatother
+\setlength{\droptitle}{-0.65in}
+\pretitle{\begin{center}\fontsize{22}{24}\selectfont\bfseries}
+\posttitle{\par\end{center}\vskip 0.45em}
+
+\title{The Design of a\\
+Practical System for\\
+Fault-Tolerant Virtual Machines}
+\author{Daniel J. Scales, Mike Nelson, and Ganesh Venkitachalam\\
+VMware, Inc.\\
+\texttt{\{scales,mnelson,ganesh\}@vmware.com}}
+\date{}
+
+\newcommand{\insertfigureone}{%
+  \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.56\columnwidth]{figures/original/figure-1-basic-ft.png}
+    \caption{基本FT配置。}
+  \end{figure}}
+\newcommand{\insertfiguretwo}{%
+  \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\columnwidth]{figures/original/figure-2-ft-protocol.png}
+    \caption{FT协议。}
+  \end{figure}}
+\newcommand{\insertfigurethree}{%
+  \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\columnwidth]{figures/original/figure-3-logging-buffers.png}
+    \caption{FT日志缓冲区和通道。}
+  \end{figure}}
+\newcommand{\insertfigurefour}{%
+  \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\columnwidth]{figures/original/figure-4-nonshared-disk.png}
+    \caption{FT非共享磁盘配置。}
+  \end{figure}}
+\newcommand{\inserttableone}{%
+  \begin{table}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/original/table-1-performance.png}
+    \caption{基本性能结果。}
+  \end{table}}
+\newcommand{\inserttabletwo}{%
+  \begin{table}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/original/table-2-network-performance.png}
+    \caption{网络发送和接收性能。}
+  \end{table}}
+
+\begin{document}
+\ifXeTeX
+  \CJKsetecglue{}
+  \xeCJKsetup{CJKglue={\hskip 0pt plus 0.035em}, CJKecglue={\hskip 0pt}}
+\fi
+\maketitle
+\ifXeTeX
+  \CJKsetecglue{}
+  \xeCJKsetup{CJKglue={\hskip 0pt plus 0.035em}, CJKecglue={\hskip 0pt}}
+\fi
+
+\input{sections/00-abstract}
+\input{sections/01-introduction}
+\input{sections/02-basic-ft-design}
+\input{sections/03-practical-implementation}
+\input{sections/04-design-alternatives}
+\input{sections/05-performance-evaluation}
+\input{sections/06-related-work}
+\input{sections/07-conclusion-future-work}
+\input{sections/08-acknowledgments}
+\input{sections/09-references}
+
+\end{document}

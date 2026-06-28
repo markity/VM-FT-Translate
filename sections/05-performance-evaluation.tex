@@ -1,0 +1,112 @@
+\section{性能评估}
+
+本节对VMware FT在若干应用workload和网络benchmark上的性能%
+做一个基本评估。对于这些结果，我们把primary VM和backup VM分别运行在配置相%
+同的两台服务器上，每台服务器都有八个Intel Xeon 2.8GHz CPU和8 %
+Gbytes内存。两台服务器通过10 Gbit/s交叉network connection，%
+不过正如后面将看到的，在所有情况下使用的网络%
+带宽都远低于1 Gbit/s。两台服务器都通过标准的4 Gbit/s %
+Fibre Channel网络访问连接到EMCClariion的共享virtual disk。%
+用于驱动部分workload的客户端通过1 Gbit/s network connection到服务器。%
+
+我们在性能结果中评估的应用如下。SPECJbb2005是一个行业标准的Java应用%
+benchmark，它非常占用CPU和内存，但几乎不执行IO。%
+Kernel Compile是一个运行Linux内核编译的workload。%
+该workload会进行一些disk read和disk write，并且由于会创建和销毁许多编译进程%
+，它非常占用CPU和MMU。Oracle Swingbench是一个%
+workload，其中Oracle 11g数据库由Swingbench OLTP（在%
+线transaction处理）workload驱动。该workload会执行大量%
+磁盘和网络IO，并有八十个并发数据库会话。MS-SQLDVD Store是一个工作%
+负载，其中Microsoft SQL Server 2005数据库由DVD Store基%
+准测试驱动，该benchmark有十六个并发客户端。
+
+\subsection{基本性能结果}
+
+\inserttableone
+
+Table 1给出了基本性能结果。对于列出的每个应用，第二列给出在运行服务器%
+workload的VM上启用FT时的应用性能，与同一VM上未启用FT时性能的比值%
+。性能比值的计算方式是：小于1的值表示FTworkload较慢。显然，%
+对于这些代表性workload，启用FT的开销小于10\%。%
+SPECJbb2005完全受计算限制，没有空闲时间，但表现良好，%
+因为除了timer interrupt之外，它几乎没有%
+non-deterministic event。其他workload会执行磁盘IO%
+，并且有一些空闲时间，因此部分FT开销可能会被FT VM空闲时间较少这一事实隐藏。%
+不过，总体结论是，VMware FT能够以相当低的性能开销支持%
+fault-tolerant VM。%
+
+在表的第三列，我们给出运行这些应用时在logging channel上发送数据的平%
+均带宽。对于这些应用，日志带宽相当合理，%
+并且很容易由1 Gbit/s网络满足。事实上，低带宽需求表明多个FT %
+workload可以共享同一个1 Gbit/s网络，而不会产生任何负面性能影响。%
+
+对于运行Linux和Windows这类常见guest操作系统的VM，%
+我们发现guest OS空闲时的典型日志带宽为0.5-1.5 %
+Mbit/s。“空闲”带宽主要来自record timer interrupt的投递。%
+对于具有活跃workload的VM，%
+日志带宽主要由必须发送给backup VM的网络和磁盘输入决定，%
+也就是接收到的network packet以及从disk read得到的%
+disk block。因此，对于网络接收或disk read带宽非常高的应用，%
+日志带宽可能远高于Table 1中测得的数值。对于这类应用，%
+logging channel的带宽可能成为瓶颈，%
+尤其是在logging channel还有其他用途时。%
+
+许多真实应用在logging channel上所需的带宽相对较低，%
+这使基于replay的fault tolerance对于使用非共享磁盘的远距离配置%
+非常有吸引力。对于primary VM和backup VM可能相隔1-100公里的远%
+距离配置，光纤很容易支持100-1000 Mbit/s的带宽，%
+并且latency小于10毫秒。%
+
+对于Table 1中的应用，100-1000 Mbit/s的带宽应当足以获得良%
+好性能。不过要注意，primary VM和backup VM之间额外的往返%
+latency可能导致网络和磁盘输出最多delay 20毫秒。%
+远距离配置只适用于那些客户端能够容忍每个请求增加这种额外latency的应用。%
+
+对于两个磁盘最密集的应用，我们测量了在backup VM上执行disk read（如%
+section 4.2所述）相对于通过logging channel发送disk read数据的%
+性能影响。对于Oracle Swingbench，在backup VM上执行%
+disk read时throughput约低4\%；对于MS-SQLDVD Store，%
+throughput约低1\%。同时，Oracle Swingbench的日志%
+带宽从12Mbit/s降至3Mbit/s，%
+MS-SQLDVD Store的日志带宽从18Mbit/s降至%
+8Mbit/s。显然，对于disk read带宽大得多的应用，%
+带宽节省可能大得多。如section 4.2所述，当disk read在%
+backup VM上执行时，性能预计会稍差一些。不过，在logging %
+channel带宽受限的场景中（例如远距离配置），%
+在backup VM上执行disk read可能是有用的。
+
+\subsection{网络benchmark}
+
+\inserttabletwo
+
+出于若干原因，网络benchmark对我们的系统可能非常具有挑战性。首先，%
+高速网络可能具有非常高的interrupt率，这要求以非常高的速率record和%
+replay异步事件。其次，以高速率接收包的benchmark会导致很高的%
+logging traffic，因为所有这些包都必须通过logging %
+channel发送给backup VM。第三，发送包的benchmark会受到%
+Output Rule的约束；该规则会delay network packet的发%
+送，直到收到来自backup VM的相应acknowledgment。%
+这种latency会增加客户端测得的latency。它也可能降低面向客户端的网络%
+带宽，因为network protocol（例如TCP）%
+可能不得不在往返latency增加时降低网络传输速率。%
+
+Table 2给出了我们使用标准netperf benchmark进行若干测量的结果。%
+在所有这些测量中，客户端VM和primary VM通过1 Gbit/s %
+network connection。前两行给出primary host和backup host通过%
+1 Gbit/s logging channel连接时的发送和接收性能。第三、%
+第四行给出primary服务器和backup服务器通过10 %
+Gbit/s logging channel连接时的发送和接收性能；%
+与1 Gbit/s网络相比，它不仅带宽更高，而且latency更低。%
+作为粗略度量，1 Gbit/s连接上hypervisor之间的ping时间约为%
+150微秒，而10 Gbit/s连接上的ping时间约为90微秒。%
+
+未启用FT时，primary VM的发送和接收可以接近1 Gbit/s的线速（940 %
+Mbit/s）。当为接收workload启用FT时，日志带宽非常大%
+，因为所有传入network packet都必须在logging channel上发送。因此，%
+logging channel可能成为瓶颈，这一点在1 Gbit/s logging %
+network的结果中可以看到。对于10 Gbit/s logging network%
+，这种影响小得多。当为发送workload启用FT时，发送包的数据不会被%
+record，但网络interrupt仍然必须record。%
+日志带宽低得多，因此可达到的网络发送带宽高于网络接收%
+带宽。总体来看，我们发现FT在非常高的发送和接收速率下会显著限制网%
+络带宽，但仍然能够达到很高的绝对速率。

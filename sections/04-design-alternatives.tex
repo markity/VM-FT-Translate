@@ -1,0 +1,85 @@
+\section{设计替代方案}
+
+在VMware FT的实现中，我们探索了若干有趣的设计替代方案。%
+本节将讨论其中一些方案。
+
+\subsection{共享磁盘与非共享磁盘}
+
+\insertfigurefour
+
+在我们的默认设计中，primary VM和backup VM共享同一组%
+virtual disk。因此，如果发生failover，共享磁盘的内容自然是正确且可用的。%
+本质上，共享磁盘被认为位于primary VM和backup VM之外，%
+所以对共享磁盘的任何写入都被视为一次到外部世界的通信。因此，%
+只有primary VM会实际写入磁盘，并且对共享磁盘的写入必须按照%
+\textbf{Output Rule}进行delay。%
+
+另一种设计是让primary VM和backup VM拥有独立的（非共享的）%
+virtual disk。在这种设计中，backup VM确实会对自己的%
+virtual disk执行所有disk write；这样做时，%
+它自然会使自己virtual disk的内容与primary VM virtual disk%
+的内容保持同步。Figure 4展示了这种配置。在非共享磁盘的情况下，%
+virtual disk本质上被视为每个VM内部状态的一部分。因此，%
+primary VM的disk write不必按照\textbf{Output Rule}进行delay。%
+当primary VM和backup VM无法访问shared storage时，non-shared设计%
+非常有用。造成这种情况的原因可能是shared storage不可用或成本太高，%
+也可能是运行primary VM和backup VM的服务器距离很远，即所谓%
+“long-distance FT”\emph{(译者注：shared storage如果离%
+primary/backup很远，那么性能差)}。非共享设计的一个缺点是，当首次启用%
+fault tolerance时，必须以某种方式显式同步两份virtual disk。此外，%
+failure后磁盘可能变得不同步，因此在failure后重启backup VM时%
+必须显式重新同步。也就是说，FT VMotion不仅必须同步primary VM和%
+backup VM的运行状态，还必须同步它们的磁盘状态。%
+
+在非共享磁盘配置中，可能没有shared storage可用于处理%
+split-brain情况。在这种情况下，系统可以使用其他外部仲裁者，%
+例如一台两台服务器都能通信的第三方服务器。如果这些服务器属于一个包含两个以上节点%
+的cluster，系统也可以使用基于cluster成员关系的majority算法%
+。在这种情况下，只有当某个VM运行在一个能够通信的子cluster中的服务器上，%
+并且该子cluster包含原始节点的多数时，该VM才允许go live。
+\\\emph{译者注：这种设计可以在backup take over的时候不用再猜%
+old primary对shared disk的pending write是否已经生效。但是缺点也有，就是%
+建立一个backup难度大，磁盘数据的全量拷贝是很慢的。还有一个缺点是需要自己用%
+额外的方式避免脑裂。}%
+
+\subsection{在backup VM上执行disk read}
+
+在我们的默认设计中，backup VM从不读取自己的virtual disk（无论磁%
+盘是共享的还是非共享的）。由于disk read被视为输入，%
+因此很自然地把disk read结果通过logging channel发送给%
+backup VM。\emph{(译者注：发出disk read请求本身要和disk read返回结果区分开。%
+guest OS提交read请求只是虚拟磁盘设备状态的一次变化，backup在replay guest%
+指令流时也会建立同样的pending read request；primary hypervisor随后向%
+真实磁盘发出的physical read只是为了取得一个外部输入，并不改变磁盘的%
+逻辑内容，因此通常不被视为Output Rule中的output。真正作为input进入VM%
+的是read返回的数据以及对应的I/O completion事件。primary必须记录读到的%
+数据和completion被投递的执行位置，backup则在相同位置把同一数据交付给%
+guest)}%
+
+另一种设计是让backup VM执行disk read，从而消除对disk read数%
+据的日志record。对于执行大量disk read的workload，%
+这种方法可以显著减少logging channel上的流量。%
+
+然而，这种方法有许多微妙之处。它可能减慢backup VM的执行，%
+因为backup VM必须执行所有disk read；当backup VM到达%
+primary VM中这些读取完成的执行点时，如果它们在物理上尚未完成，%
+backup VM就必须等待。%
+
+此外，还必须做一些额外工作来处理失败的disk read操作。%
+如果primary VM的disk read成功，但backup VM对应的%
+disk read失败，那么backup VM的disk read必须不断重试，直到成功，%
+因为backup VM必须在内存中获得与primary VM相同的数据。相反，%
+如果primary VM的disk read失败，那么目标内存的内容必须通过%
+logging channel发送给backup VM，因为内存内容将是不确定的，%
+并且不一定能通过backup VM的成功disk read来复制。%
+
+最后，如果把这种disk read替代方案用于共享磁盘配置，还会有一个微妙问题。%
+如果primary VM读取某个特定disk location，%
+并且很快又写入同一disk location，那么该disk write必须%
+delay，直到backup VM已执行第一次disk read。%
+这种依赖关系可以被检测并正确处理，但会给实现增加额外复杂性。%
+
+在section 5.1，我们给出一些性能结果，表明在backup VM上执行disk read%
+会使真实应用的吞吐量略微下降（1-4\%），但也会明显降低日志带宽%
+。因此，在logging channel带宽相当有限的情况下，%
+在backup VM上执行disk read可能是有用的。

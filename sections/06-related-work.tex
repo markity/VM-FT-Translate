@@ -1,0 +1,54 @@
+\section{相关工作}
+
+Bressoud和Schneider[3]描述了完全在hypervisor层通过%
+软件为VM实现fault tolerance的最初思想。他们通过一个面向HP %
+PA-RISC处理器服务器的原型，证明了让backup VM与primary VM保持%
+同步的可行性。然而，由于PA-RISC架构的限制，他们无法实现完全安全且隔离的VM%
+。此外，他们没有实现任何failure detection方法，%
+也没有尝试解决section 3描述的任何实际问题。更重要的是，他们对自己的FT协议施加了一%
+些不必要的约束。首先，他们引入了epoch的概念，在这种机制中，%
+异步事件会被delay到一段固定间隔结束时才投递。epoch的概念并不是必要的；%
+他们可能采用它，是因为他们无法足够高效地replay单个异步事件。其次，%
+他们要求primary VM基本停止执行，直到backup VM已经接收并%
+acknowledge所有先前log entry。然而，%
+必须delay的只是输出本身（例如network packet），%
+primary VM本身可以继续执行。%
+
+Bressoud[4]描述了一个在操作系统（Unixware）%
+中实现fault tolerance的系统，因此它为运行在该操作系统上的所有应用提%
+供fault tolerance能力。系统调用接口成为必须被%
+deterministically复制的一组操作。该工作与基于hypervisor的工作%
+具有类似的限制和设计选择。%
+
+Napper等人[9]以及Friedman和Kama[7]描述了fault-tolerant %
+Java VM的实现。他们采用了与我们类似的设计，%
+即在logging channel上发送关于输入和%
+non-deterministic operation的信息。%
+与Bressoud一样，他们似乎没有关注failure detection以及%
+failure后重新建立fault tolerance。此外，%
+他们的实现只限于为运行在Java VM中的应用提供fault tolerance。%
+这些系统试图处理多线程Java应用的问题，但要求所有数据都被锁正确保护，%
+或者强制对共享内存的访问进行串行化。%
+
+Dunlap等人[6]描述了一种deterministic replay的实现，%
+目标是在半虚拟化系统上调试应用软件。我们的工作支持运行在VM内部的任意操作系统，%
+并为这些VM实现fault tolerance支持，这需要高得多的稳定性和性能水平%
+。%
+
+Cully等人[5]描述了另一种支持fault-tolerant VM的方法，%
+以及一个名为Remus的项目中的实现。采用这种方法时，primary VM的状态会%
+在执行期间被反复checkpoint，并发送到backup服务器，%
+由backup服务器收集这些checkpoint信息。%
+checkpoint必须非常频繁地执行（每秒多次），因为外部输出必须被%
+delay，直到后续checkpoint已经发送并被%
+acknowledge。这种方法的优点是，它同样适用于单处理器和多处理器%
+VM。主要问题是，这种方法需要非常高的网络带宽，%
+用于在每次checkpoint时发送内存状态的增量变化。%
+[5]中给出的Remus结果显示，在尝试使用1 Gbit/s %
+network connection来传输内存状态变化、每秒执行40次checkpoint时，%
+Kernel Compile和\mbox{SPECweb}benchmark的执行时间会增加%
+100\%到225\%。有一些优化可能有助于降低所需%
+网络带宽，但尚不清楚使用1 Gbit/s连接能否获得合理性能。相比之下，%
+我们基于deterministic replay的方法，对于若干真实应用，%
+可以实现低于10\%的开销，并且primary host与backup host之间%
+所需带宽低于20Mbit/s。

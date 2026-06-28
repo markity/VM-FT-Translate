@@ -1,0 +1,48 @@
+\section{结论和未来工作}
+
+我们在VMware vSphere中设计并实现了一个高效且完整的系统，%
+为运行在服务器cluster中的VM提供fault tolerance（FT）%
+能力。我们的设计基于使用VMware %
+deterministic replay，通过另一台host上的backup VM复%
+制primary VM的执行。如果运行primary VM的服务器failure，%
+backup VM会立即take over，不会interrupt服务，%
+也不会丢失数据。%
+
+总体而言，在通用硬件上，VMware FT下fault-tolerant VM的性能%
+非常出色，并且对一些典型应用表现出低于10\%的开销。VMware FT的大部分性%
+能成本来自使用VMware deterministic replay保持%
+primary VM和backup VM同步的开销。因此，VMware FT的低开销来%
+自VMware deterministic replay的高效率。此外，%
+使primary VM和backup VM保持同步所需的日志带宽通常相%
+当小，常常低于20Mbit/s。由于在大多数情况下日志带宽很小，%
+实现primary VM和backup VM相隔较远距离（1-100公里）%
+的配置似乎是可行的。因此，VMware FT可以用于同时防护整个站点failure%
+这类灾难的场景。值得注意的是，logging流通常相当容易压缩，简单的压缩技术只需少量额外%
+CPU开销，就能显著降低日志带宽。%
+
+我们使用VMware FT得到的结果表明，可以在deterministic replay%
+之上构建一个高效的fault-tolerant VM实现。%
+这样的系统能够以极低开销，透明地为运行任意操作系统和应用的VM提供%
+fault tolerance能力。然而，要使一个fault-tolerant VM系统对客户%
+有用，它还必须健壮、易于使用并且高度自动化。一个可用系统需要许多超出VM复制执行%
+本身的其他组件。特别是，VMware FT会在failure后自动恢复冗余，%
+方法是在本地cluster中找到合适的服务器，并在该服务器上创建新的%
+backup VM。通过解决所有必要问题，我们展示了一个可用于客户数据中心真实应用%
+的系统。%
+
+通过deterministic replay实现fault tolerance的一个%
+权衡是，目前deterministic replay只在单处理器VM上得到了高效实%
+现。不过，对于种类繁多的workload，单处理器VM已经绰绰有余，%
+尤其是物理处理器仍在持续变得更强。此外，许多workload可以通过使用多个单处%
+理器VM向外扩展，而不是使用一个更大的多处理器VM向上扩展。%
+面向多处理器VM的高性能replay是一个活跃研究领域，%
+并且有可能通过微处理器中的一些额外硬件支持来实现。一个有趣方向可能是扩展%
+transaction内存模型，以促进多处理器replay。%
+
+未来，我们也有兴趣扩展系统，以处理部分硬件failure。%
+所谓部分硬件failure，是指服务器中部分功能或冗余丧失，%
+但不会导致数据损坏或丢失。一个例子是VM失去所有网络连通性，%
+或者物理服务器中一个冗余电源failure。如果运行primary VM的服务器发%
+生部分硬件failure，在许多情况下（但不是全部情况），%
+立即failover到backup VM将是有利的。这样的failover可以立即%
+为关键VM恢复完整服务，并确保该VM被快速迁离一台可能不可靠的服务器。
