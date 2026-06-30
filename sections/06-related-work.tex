@@ -11,10 +11,10 @@ PA-RISC处理器服务器的原型，证明了让backup VM与primary VM保持%
 他们可能采用它，是因为他们无法足够高效地replay单个异步事件。其次，%
 他们要求primary VM基本停止执行，直到backup VM已经接收并%
 acknowledge所有先前log entry。然而，%
-必须delay的只是输出本身（例如network packet），%
+必须delay的只是输出本身(例如network packet)，%
 primary VM本身可以继续执行。%
 
-Bressoud[4]描述了一个在操作系统（Unixware）%
+Bressoud[4]描述了一个在操作系统(Unixware)%
 中实现fault tolerance的系统，因此它为运行在该操作系统上的所有应用提%
 供fault tolerance能力。系统调用接口成为必须被%
 deterministically复制的一组操作。该工作与基于hypervisor的工作%
@@ -39,7 +39,7 @@ Cully等人[5]描述了另一种支持fault-tolerant VM的方法，%
 以及一个名为Remus的项目中的实现。采用这种方法时，primary VM的状态会%
 在执行期间被反复checkpoint，并发送到backup服务器，%
 由backup服务器收集这些checkpoint信息。%
-checkpoint必须非常频繁地执行（每秒多次），因为外部输出必须被%
+checkpoint必须非常频繁地执行(每秒多次)，因为外部输出必须被%
 delay，直到后续checkpoint已经发送并被%
 acknowledge。这种方法的优点是，它同样适用于单处理器和多处理器%
 VM。主要问题是，这种方法需要非常高的网络带宽，%

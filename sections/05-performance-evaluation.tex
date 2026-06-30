@@ -14,8 +14,8 @@ benchmark，它非常占用CPU和内存，但几乎不执行IO。%
 Kernel Compile是一个运行Linux内核编译的workload。%
 该workload会进行一些disk read和disk write，并且由于会创建和销毁许多编译进程%
 ，它非常占用CPU和MMU。Oracle Swingbench是一个%
-workload，其中Oracle 11g数据库由Swingbench OLTP（在%
-线transaction处理）workload驱动。该workload会执行大量%
+workload，其中Oracle 11g数据库由Swingbench OLTP(在%
+线transaction处理)workload驱动。该workload会执行大量%
 磁盘和网络IO，并有八十个并发数据库会话。MS-SQLDVD Store是一个工作%
 负载，其中Microsoft SQL Server 2005数据库由DVD Store基%
 准测试驱动，该benchmark有十六个并发客户端。
@@ -62,8 +62,8 @@ logging channel的带宽可能成为瓶颈，%
 latency可能导致网络和磁盘输出最多delay 20毫秒。%
 远距离配置只适用于那些客户端能够容忍每个请求增加这种额外latency的应用。%
 
-对于两个磁盘最密集的应用，我们测量了在backup VM上执行disk read（如%
-section 4.2所述）相对于通过logging channel发送disk read数据的%
+对于两个磁盘最密集的应用，我们测量了在backup VM上执行disk read(如%
+section 4.2所述)相对于通过logging channel发送disk read数据的%
 性能影响。对于Oracle Swingbench，在backup VM上执行%
 disk read时throughput约低4\%；对于MS-SQLDVD Store，%
 throughput约低1\%。同时，Oracle Swingbench的日志%
@@ -72,7 +72,7 @@ MS-SQLDVD Store的日志带宽从18Mbit/s降至%
 8Mbit/s。显然，对于disk read带宽大得多的应用，%
 带宽节省可能大得多。如section 4.2所述，当disk read在%
 backup VM上执行时，性能预计会稍差一些。不过，在logging %
-channel带宽受限的场景中（例如远距离配置），%
+channel带宽受限的场景中(例如远距离配置)，%
 在backup VM上执行disk read可能是有用的。
 
 \subsection{网络benchmark}
@@ -87,7 +87,7 @@ channel发送给backup VM。第三，发送包的benchmark会受到%
 Output Rule的约束；该规则会delay network packet的发%
 送，直到收到来自backup VM的相应acknowledgment。%
 这种latency会增加客户端测得的latency。它也可能降低面向客户端的网络%
-带宽，因为network protocol（例如TCP）%
+带宽，因为network protocol(例如TCP)%
 可能不得不在往返latency增加时降低网络传输速率。%
 
 Table 2给出了我们使用标准netperf benchmark进行若干测量的结果。%
@@ -100,8 +100,8 @@ Gbit/s logging channel连接时的发送和接收性能；%
 作为粗略度量，1 Gbit/s连接上hypervisor之间的ping时间约为%
 150微秒，而10 Gbit/s连接上的ping时间约为90微秒。%
 
-未启用FT时，primary VM的发送和接收可以接近1 Gbit/s的线速（940 %
-Mbit/s）。当为接收workload启用FT时，日志带宽非常大%
+未启用FT时，primary VM的发送和接收可以接近1 Gbit/s的线速(940 %
+Mbit/s)。当为接收workload启用FT时，日志带宽非常大%
 ，因为所有传入network packet都必须在logging channel上发送。因此，%
 logging channel可能成为瓶颈，这一点在1 Gbit/s logging %
 network的结果中可以看到。对于10 Gbit/s logging network%

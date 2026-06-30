@@ -14,7 +14,7 @@ virtual disk。因此，如果发生failover，共享磁盘的内容自然是正
 只有primary VM会实际写入磁盘，并且对共享磁盘的写入必须按照%
 \textbf{Output Rule}进行delay。%
 
-另一种设计是让primary VM和backup VM拥有独立的（非共享的）%
+另一种设计是让primary VM和backup VM拥有独立的(非共享的)%
 virtual disk。在这种设计中，backup VM确实会对自己的%
 virtual disk执行所有disk write；这样做时，%
 它自然会使自己virtual disk的内容与primary VM virtual disk%
@@ -44,8 +44,8 @@ old primary对shared disk的pending write是否已经生效。但是缺点也有
 
 \subsection{在backup VM上执行disk read}
 
-在我们的默认设计中，backup VM从不读取自己的virtual disk（无论磁%
-盘是共享的还是非共享的）。由于disk read被视为输入，%
+在我们的默认设计中，backup VM从不读取自己的virtual disk(无论磁%
+盘是共享的还是非共享的)。由于disk read被视为输入，%
 因此很自然地把disk read结果通过logging channel发送给%
 backup VM。\emph{(译者注：发出disk read请求本身要和disk read返回结果区分开。%
 guest OS提交read请求只是虚拟磁盘设备状态的一次变化，backup在replay guest%
@@ -80,6 +80,6 @@ delay，直到backup VM已执行第一次disk read。%
 这种依赖关系可以被检测并正确处理，但会给实现增加额外复杂性。%
 
 在section 5.1，我们给出一些性能结果，表明在backup VM上执行disk read%
-会使真实应用的吞吐量略微下降（1-4\%），但也会明显降低日志带宽%
+会使真实应用的吞吐量略微下降(1-4\%)，但也会明显降低日志带宽%
 。因此，在logging channel带宽相当有限的情况下，%
 在backup VM上执行disk read可能是有用的。

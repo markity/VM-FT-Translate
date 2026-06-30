@@ -8,8 +8,8 @@ section 2描述了FT的基本设计和协议。然而，要创建一个可用、
 必须设计的最大额外组件之一，是一种能够以与primary VM%
 相同状态启动backup VM的机制。这个机制也会在发生failure%
 之后重新启动backup VM时使用。因此，该机制必须能够用于一个%
-处于任意状态的正在运行的primary VM（也就是说，并不只是用于%
-启动阶段）。此外，我们希望该机制不会显著干扰primary VM的执%
+处于任意状态的正在运行的primary VM(也就是说，并不只是用于%
+启动阶段)。此外，我们希望该机制不会显著干扰primary VM的执%
 行，因为这会影响该VM当前的任何客户端。%
 
 对于VMware FT，我们改造了VMware vSphere现有的VMotion功%
@@ -28,24 +28,34 @@ channel，并使源VM以primary VM身份进入recording mode%
 硬件每10ms产生一次定时器中断，那么内核收到10次中断后，就认为大约%
 过去了100ms。现代操作系统通常不会仅靠这种周期性tick来计算当前时%
 间，而是会选择某个clocksource，例如x86机器上的TSC%
-（Time Stamp Counter，CPU时间戳计数器），或者虚拟化环境中的%
+(Time Stamp Counter，CPU时间戳计数器)，或者虚拟化环境中的%
 paravirtual clock。调用gettimeofday时，系统会读取当前%
 clocksource的计数值，与内核timekeeper中保存的基准计数值%
-（如cycle\_last）相减，将cycle差值换算成纳秒，再加到内核维%
+(如cycle\_last)相减，将cycle差值换算成纳秒，再加到内核维%
 的wallclock基准时间上，最后返回给用户态。很多系统还会通过%
 vDSO在用户态完成这一步，避免每次都陷入内核。
 \\针对VM暂停和迁移，读者可能会问：在复制期间，如果VM大约暂停了1s，%
-是否会导致VM内部读到的时间落后现实世界时间（wallclock）1s？可%
+是否会导致VM内部读到的时间落后现实世界时间(wallclock)1s？可%
 以这样理解：如果系统真的完全依赖timer interrupt计数来推进时间，%
 并且暂停期间没有收到这些中断，那么恢复后确实可能出现时间落后；但现%
 代虚拟化环境通常不会简单依赖补发timer interrupt来追赶时间。%
 hypervisor可以通过虚拟化TSC、虚拟时钟偏移、paravirtual clock%
-或时间同步机制，让guestOS在下一次读取clocksource或调用%
+或时间同步机制，让guest OS在下一次读取clocksource或调用%
 gettimeofday时看到已经校正后的wallclock(real world clock)。%
 因此，VM暂停1s后，不需要向guest OS连续注入大量timer interrupt来弥补这1s。%
 wallclock的推进和timer interrupt的注入是两个不同层面的问题；VM恢复时，%
 hypervisor会根据虚拟定时器的类型和语义处理已经过期的timer，可能合并或投递%
-timer interrupt，并不保证固定补发一个中断。}%
+timer interrupt，并不保证固定补发一个中断。
+\\\\读取wallclock也是一种non-deterministic operation。原因是wallclock
+来自VM外部，如果primary VM和backup VM分别读取各自host的真实时间，
+它们可能得到不同结果，从而导致执行路径分叉。VM FT的做法是：primary VM
+执行这类读取操作时，由hypervisor返回一个虚拟时间值，并把该返回值及其发生位置
+写入replay log；backup VM replay到同一位置时，不读取自己的真实时间，而是直接
+使用log中记录的值。这样，primary和backup看到的时间完全一致。
+需要注意的是，用户态的gettimeofday不一定每次都会直接产生log entry。
+如果它只是读取guest memory中由guest OS维护的时间变量，那么这个普通内存读取
+本身是确定性的。真正需要记录的是把外部时间引入VM的边界操作，例如读取虚拟时钟
+设备、执行RDTSC，或者timer interrupt推进guest OS时间状态。}%
 
 启动backup VM的另一个方面，是选择在哪台服务器上运行它。%
 fault-tolerant VM运行在能够访问shared storage的服务器cluster中，%
@@ -74,11 +84,19 @@ channel，log entry也会在到达后尽快从logging channel读%
 entry到自己的log buffer时，都会向primary VM发送%
 acknowledgment。这些acknowledgment使VMware FT%
 能够确定那些被\textbf{Output Rule} delay的输出何时可以发送。%
-Figure 3展示了这一过程。\emph{(译者注：log entry包含，%
-例如timer interrupt、network input、disk I/O completion的信息)}%
+Figure 3展示了这一过程。\\\emph{译者注：log entry包含，%
+timer/disk-write-completion interrupt、wallclock read、%
+鼠标/键盘/network/disk-read-completion input，以及为了满足%
+\textbf{Output Rule}的output log entry，这些output包括%
+写共享磁盘、写外部设备，还有对外写网络报文。}%
 
 如果backup VM在需要读取下一条log entry时遇到空的log buffer%
-，它会停止执行，直到有新的log entry可用。由于backup VM不与外部通信%
+，它会停止执行，直到有新的log entry可用\emph{(译者注：backup并不是%
+收到一条log entry后才批量执行一段代码；确定性指令可以连续replay，只有当%
+执行到需要下一条非确定性结果或事件的位置而对应log entry尚未到达时才会暂停。%
+Bressoud的epoch方案同样让backup保持滞后，并让primary在epoch边界等待ACK；%
+两者的主要差异是事件记录与投递的粒度，而不是双方是否“同时执行一批命令”)}。%
+由于backup VM不与外部通信%
 ，这种暂停不会影响VM的任何客户端。类似地，如果primary VM在需要写入%
 log entry时遇到满的log buffer，它必须停止执行，%
 直到log entry能够被刷新出去。这种执行停止是一种自然的流控机制，%
@@ -86,7 +104,7 @@ log entry时遇到满的log buffer，它必须停止执行，%
 这种暂停可能影响VM的客户端，因为primary VM会完全停止并且无响应，%
 直到它能够record log entry并继续执行。因此，%
 我们的实现必须被设计成尽量降低primary log buffer被填满的可能性。%
-\\\emph{译者注：下面是简化的primary执行与日志生成伪代码；实际实现还包含%
+\\\emph{译者注：简化的primary执行与日志生成伪代码；实际实现还包含%
 并发的日志发送、ACK处理和buffer回收逻辑：}
 \begin{Verbatim}[
   fontsize=\scriptsize,
@@ -100,7 +118,7 @@ func PrimaryRunLoop(vm *VM) {
         switch result.Type {
 
         case "DETERMINISTIC_EXECUTION":
-            // 普通CPU指令、内存读写、guestOS内部逻辑
+            // 普通CPU指令、内存读写、guest OS内部逻辑
             // 不写log，backup自己也能执行出来
             continue
 
@@ -165,14 +183,14 @@ primary log buffer可能被填满的一个原因，是backup VM执行得太慢�
 primary VMrecord执行的速度来replay执行。幸运的是，%
 在VMware deterministic replay中，%
 record和replay的开销大致相同。然而，如果承载backup VM的服务器%
-上运行了许多其他VM（因而资源过度提交），那么即使backup hypervisor的VM%
+上运行了许多其他VM(因而资源过度提交)，那么即使backup hypervisor的VM%
 调度器尽力调度，backup VM也可能无法获得足够的CPU和内存资源来以%
 primary VM的速度执行。
 \\\emph{译者注：这里的内存资源不足，并不是说guest OS看到%
 的内存容量变小了。创建VM时确实会指定一个内存大小，例如4GB%
-或 8GB，guest OS也会认为自己拥有这么多“物理内存”。但是这%
+或8GB，guest OS也会认为自己拥有这么多“物理内存”。但是这%
 只是guest看到的guest physical memory大小，这些guest物理页背%
-后仍然需要宿主机(host)真实物理内存承载。如果承载backup VM 的机器上%
+后仍然需要宿主机(host)真实物理内存承载。如果承载backup VM的机器上%
 运行了很多VM，所有VM配置的内存总量可能超过物理机的真实物理内存，%
 这就是memory overcommit，也就是内存超卖。此时hypervisor可能%
 通过ballooning、memory compression、host swapping、page sharing%
@@ -184,7 +202,7 @@ primary VM的速度执行。
 磁盘空间，也可以通过ballooning%
 让该guest OS主动释放一些页面，再把释放出来的host物理页分配%
 给当前更需要资源的VM。被回收页面的VM通常仍然可以继续运行，%
-但如果它之后再次访问这些被压缩或换出的页面，就需要等待 hypervisor%
+但如果它之后再次访问这些被压缩或换出的页面，就需要等待hypervisor%
 重新解压或从swap读回，因此会发生短暂停顿。更底层地说，guest OS%
 维护自己的页表，把guest virtual address映射到guest physical address；hypervisor%
 还会维护第二级地址映射，例如Intel EPT或AMD NPT，把guest physical%
@@ -195,7 +213,7 @@ hypervisor把该页从swap中读回，或者解压、重新分配host物理页�
 并恢复对应的二级页表映射。这个过程更准确地说是VM-exit，不是%
 普通外部中断。它不会改变guest OS看到的内存大小，但会增加内存%
 访问延迟。因此backup VM虽然名义上仍拥有创建时配置的内存容量，%
-却可能因为host层面的物理内存竞争、换页、向其他 VM 回收页面，%
+却可能因为host层面的物理内存竞争、换页、向其他VM回收页面，%
 或者NUMA局部性变差而replay变慢。}%
 
 除了避免log buffer被填满导致意外暂停之外，我们不希望执行滞后变得太大还有%
@@ -204,24 +222,24 @@ replay它已经acknowledged的所有log entry来“追上来”%
 ，然后才能go live并开始与外部世界通信。完成replay所需时间基本上就是%
 failure发生点的执行滞后时间，因此backup VM go live所需时间大致%
 等于failure detection时间加上当前执行滞后时间。因此，%
-我们不希望执行滞后时间很大（超过一秒），因为这会显著增加failover%
-（故障接管）的时间。\emph{(译者注：因为backup必须重放完，直到处理完%
+我们不希望执行滞后时间很大(超过一秒)，因为这会显著增加failover%
+(故障接管)的时间。\emph{(译者注：因为backup必须重放完，直到处理完%
 最后一条log entry)}%
 
 因此，我们有一个额外机制来降低primary VM的速度，%
 防止backup VM落后太多。在发送和acknowledgment log entry%
 的协议中，我们会发送额外信息，以确定primary VM和%
 backup VM之间的实时执行滞后。通常执行滞后小于100毫秒。%
-如果backup VM开始出现显著执行滞后（例如超过1秒），%
-VMware FT会通过通知调度器给primary VM略少一些CPU（开始时只减少%
-几个百分点）来减慢primary VM。我们使用一个缓慢的反馈循环，%
+如果backup VM开始出现显著执行滞后(例如超过1秒)，%
+VMware FT会通过通知调度器给primary VM略少一些CPU(开始时只减少%
+几个百分点)来减慢primary VM。我们使用一个缓慢的反馈循环，%
 逐步找出适合primary VM的CPU限制，使backup VM能够匹配其执行。%
 如果backup VM继续落后，我们会继续逐步降低primary VM的CPU限制。%
 相反，如果backup VM追上来了，我们会逐步提高primary VM的CPU限制%
 ，直到backup VM恢复到只有轻微滞后。%
-\\\emph{译者注：\textbf{Output Rule}会把对外输出额外延迟到backup VM ACK%
-对应log entry之后。在游戏服务器中，这个延迟尤其影响用户体验，假如ack时间是40ms%
-那么游戏服务器的出包延迟很可能就会多出接近40ms，有的游戏玩家根本接受不了这种延迟。}%
+\\\emph{译者注：\textbf{Output Rule}会把对外输出延迟到backup VM ACK对应%
+log entry之后。例如logging channel的一次确认往返若耗时约40ms，额外出包%
+延迟可能接近这一量级；实际延迟还取决于log flush、批处理和调度。}%
 
 注意，primary VM的这种减速非常少见，通常只会在系统处于极端压力下发生。%
 section 5中的所有性能数字都包含了任何这类减速的成本。
@@ -231,7 +249,7 @@ section 5中的所有性能数字都包含了任何这类减速的成本。
 另一个实际问题是处理可能应用于primary VM的各种控制操作。例如，%
 如果primary VM被显式关机，backup VM也应停止，%
 而不应尝试go live。再如，primary VM上的任何resource management%
-变化（例如增加CPU份额）也应应用到backup VM。%
+变化(例如增加CPU份额)也应应用到backup VM。%
 对于这类操作，会通过logging channel从primary VM向%
 backup VM发送特殊的control entry，以便在backup VM上执行%
 相应操作。%
@@ -248,7 +266,7 @@ primary VM的VMotion比普通VMotion增加了一些复杂性，%
 因为backup VM必须在适当时刻断开与源primary VM的连接，%
 并重新连接到目标primary VM。backup VM的VMotion也有类似问题%
 ，但还增加了额外复杂性。对于普通VMotion，我们要求在VMotion最终切换%
-发生时，所有未完成的磁盘IO都被静止（也就是完成）。对于primary VM，%
+发生时，所有未完成的磁盘IO都被静止(也就是完成)。对于primary VM，%
 通过等待物理IO完成并把这些完成投递给VM，就很容易处理这种静止。然而，%
 对于backup VM，没有简单方法能在任何要求的位置使所有IO都完成，%
 因为backup VM必须replay primary VM的执行，%
@@ -280,13 +298,14 @@ replay primary执行流时，会在同一个执行点replay到这个quiescing op
 \subsection{磁盘IO的实现问题(重要，难点)}
 
 与磁盘IO相关的实现问题有许多微妙之处。首先，由于disk operation是非%
-阻塞的，因此可以并行执行\emph{(译者注：现代网卡发送通常也采用类似的异步%
-提交模型：驱动填写descriptor并通知设备，设备通过DMA处理数据，随后报告完成)}，%
+阻塞的，因此可以并行执行\emph{(译者注：现代网卡发送也类似：驱动提交packet
+descriptor，网卡通过DMA读取packet并发送，随后报告完成。因此，系统可以
+同时保持多个outstanding disk/network request)}，%
 同时访问同一disk location的%
 并发disk operation可能导致non-determinism。此外，%
 我们的磁盘IO实现使用DMA直接读写VM的内存，因此同时访问同一内存页的并发磁盘%
 操作也可能导致non-determinism。我们的解决方案通常是检测任何这样的%
-IO竞争（这种情况很少见），并强制这些竞争的disk operation在%
+IO竞争(这种情况很少见)，并强制这些竞争的disk operation在%
 primary VM和backup VM上以相同方式顺序执行。%
 \\\emph{译者注：这里讨论的是同一个VM提交的并发磁盘操作。如果多个操作%
 访问相同的disk location或guest memory page，不同的执行或完成顺序可能%
@@ -299,7 +318,7 @@ backup上按照相同顺序串行执行。这不是primary和backup之间争用s
 backup；disk write是output。非共享磁盘设计会让backup执行disk write，而让%
 backup执行disk read是section 4.2讨论的另一项独立设计。}%
 
-其次，disk operation也可能与VM中应用（或OS）的内存访问竞争，%
+其次，disk operation也可能与VM中应用(或OS)的内存访问竞争，%
 因为disk operation通过DMA直接访问VM的内存。例如，%
 如果VM中的应用/OS正在读取一个内存块，同时又有一个disk read正在读入该%
 内存块，就可能产生non-determinism结果。这种情况也不太可能发生，%
@@ -320,23 +339,21 @@ disk operation，但我们没有看到它造成任何可察觉的性能损失。
 请求把某个磁盘block读入guest内存页A；后续guest CPU又会执行读取%
 内存页A的指令。由于磁盘I/O是异步的，如果不加控制，磁盘设备可能会通过%
 DMA在某个不可控时刻把数据写入A。在primary上，guest提交读操作后不久直接读内存A，%
-primary可能读到的是老数据，也可能是从磁盘数据读出来的数据，甚至由于我们没有%
-等待中断，可能是混杂数据。而backup由于通常落后primary一段时间，等它replay%
-到读取A的指令时，很明显，它读的就是A内存的老数据，不可能是磁盘数据或者混杂数据。%
+由于primary没有等到中断，可能读到的是旧数据，也可能是磁盘读入的数据，%
+甚至还可能是混杂数据。而backup在默认设计中不会执行真实disk read；在对应%
+completion log entry到达前，它的内存A仍保持旧值。%
 这样primary和backup在同一条读取指令上就可能读到不同的值，从而导致VM状态分叉。%
-正常驱动通常会等待completion后才把数据当作有效结果使用，但错误驱动、恶意guest%
-或其他并发内存访问仍可能触发这种竞争，因此hypervisor必须保证行为确定。%
 \\\\解决办法是使用bounce buffer。primary发生disk read时，hypervisor不让磁盘设备%
 直接DMA写入guest内存页A，而是先把数据DMA到hypervisor的临时缓冲区%
 bounce buffer中；当磁盘IO完成时暂停VM，将bounce buffer%
 内存数据拷贝进内存A，并向guest注入磁盘完成的interrupt，%
-记录下此刻的CPU计数器用来生成log entry发给log buffer，随即恢复VM执行。%
+记录completion内容及其精确执行位置并生成log entry，随即恢复VM执行。%
 backup在replay时也会遇到guest提交disk read的动作；在默认设计中，backup%
 不会把该请求真正发往磁盘，而是等待primary记录的read结果和completion。%
 后续读取内存A时，它会读到旧值，%
 当停到上面提到的来自primary的disk interrupt log entry后，backup的%
 hypervisor才会暂停VM，紧接着在拿着log entry里的信息在内存A里面写数据%
-并且注入interrupt。}%
+，随即注入interrupt。}%
 
 第三，当failure发生且backup VM执行take over时，%
 primary VM上in-flight的磁盘IO会带来一些问题。%
@@ -349,7 +366,7 @@ primary VM上in-flight的磁盘IO会带来一些问题。%
 相反，我们在backup VM的go live过程中重新发出这些待处理IO。%
 由于我们已经消除了所有竞争，并且所有IO都直接指定了访问哪些内存和%
 disk block，因此即使这些disk operation已经成功完成，%
-也可以重新发出它们（也就是说，它们是幂等的）。
+也可以重新发出它们(也就是说，它们是幂等的)。
 \\\emph{译者注：hypervisor向外发网络包和hypervisor向共享磁盘发请求，%
 表面上都属于VM对外部世界的output，因此都受到\textbf{Output Rule}约束：%
 一个output至少要等到backup确认收到足够的log之后，primary才可以真正%
@@ -364,7 +381,7 @@ backup一定已经拥有足够的log，可以在failover后进入与该输出一
 反而可能制造重复输出。对于TCP，这类丢包或重复会由序号、ACK和重传机制%
 处理；对于UDP，则本来就允许丢包。因此，网络输出的不确定性可以被网络%
 协议语义吸收，FT层不需要也不应该猜测并补发旧packet。%
-\\\\磁盘I/O则不同。guest OS把本地磁盘看作块设备，请求发出后通常期待一个%
+\\\\共享磁盘的磁盘I/O则不同。guest OS把本地磁盘看作块设备，请求发出后通常期待一个%
 明确的I/O completion。如果old primary上的pending disk I/O已经发往共享%
 存储，但backup原先并没有真正发出这些I/O，那么backup接管后也不会自然%
 收到这些completion。若什么都不做，guest OS中的块设备请求会悬挂；若直接%
@@ -421,7 +438,20 @@ hypervisor可以在VM执行时直接更新接收缓冲区。不幸的是，%
 trap到hypervisor；在hypervisor中，%
 系统可以记录这些更新，然后再把它们应用到VM。类似地，%
 通常会从transmit queue异步取出包的代码在FT中也被禁用，%
-发送改为通过一次到hypervisor的trap完成（下面注明的例外除外）。%
+发送改为通过一次到hypervisor的trap完成(下面注明的例外除外)。%
+\\\emph{译者注：
+\\
+这里的问题与disk read completion类似，核心都在于虚拟设备可能异步修改
+guest-visible state。普通vSphere为了提高网络性能，可能会在guest VM
+继续执行时，由hypervisor异步更新receive buffer、descriptor ring或
+transmit queue等网络设备状态。但这些更新如果没有被记录到replay log中，
+就可能在primary VM和backup VM的指令流中发生于不同位置，从而破坏
+deterministic replay。
+\\因此，在FT模式下，VMware不能直接使用这些普通的异步网络优化，而必须让
+相关状态更新经过hypervisor的可记录路径：记录更新内容及其发生位置，然后在
+backup VM replay时于相同位置应用同样的更新。这个问题和磁盘read completion
+中通过DMA写入guest memory、随后投递interrupt的问题本质类似，都是外部设备
+异步改变VM状态所带来的non-determinism。}
 
 消除网络设备的异步更新，再加上section 2.2所述的发送包latency，%
 给网络性能带来了一些挑战。在运行FT时，我们采用两种方法来提升VM网络性能。%
@@ -439,9 +469,9 @@ hypervisor必须delay所有发送包，直到它从backup VM收到相%
 acknowledgment都可以在没有任何thread context %
 switch的情况下完成。VMware vSphere hypervisor允许向%
 TCP栈注册函数，使其在收到TCP数据时从deferred-execution上下%
-文（类似Linux中的tasklet）中被调用。这使我们能够在没有任何%
+文(类似Linux中的tasklet)中被调用。这使我们能够在没有任何%
 thread context switch的情况下，快速处理backup VM上收到的%
 任何日志消息，以及primary VM上收到的任何acknowledgment。%
 此外，当primary VM将一个待发送包入队时，我们会通过调度一个%
 deferred-execution上下文来执行刷新，从而强制立即刷新相关联的输出%
-log entry（如section 2.2所述）。
+log entry(如section 2.2所述)。

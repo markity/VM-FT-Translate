@@ -1,7 +1,7 @@
 \section{结论和未来工作}
 
 我们在VMware vSphere中设计并实现了一个高效且完整的系统，%
-为运行在服务器cluster中的VM提供fault tolerance（FT）%
+为运行在服务器cluster中的VM提供fault tolerance(FT)%
 能力。我们的设计基于使用VMware %
 deterministic replay，通过另一台host上的backup VM复%
 制primary VM的执行。如果运行primary VM的服务器failure，%
@@ -15,7 +15,7 @@ primary VM和backup VM同步的开销。因此，VMware FT的低开销来%
 自VMware deterministic replay的高效率。此外，%
 使primary VM和backup VM保持同步所需的日志带宽通常相%
 当小，常常低于20Mbit/s。由于在大多数情况下日志带宽很小，%
-实现primary VM和backup VM相隔较远距离（1-100公里）%
+实现primary VM和backup VM相隔较远距离(1-100公里)%
 的配置似乎是可行的。因此，VMware FT可以用于同时防护整个站点failure%
 这类灾难的场景。值得注意的是，logging流通常相当容易压缩，简单的压缩技术只需少量额外%
 CPU开销，就能显著降低日志带宽。%
@@ -43,6 +43,6 @@ transaction内存模型，以促进多处理器replay。%
 所谓部分硬件failure，是指服务器中部分功能或冗余丧失，%
 但不会导致数据损坏或丢失。一个例子是VM失去所有网络连通性，%
 或者物理服务器中一个冗余电源failure。如果运行primary VM的服务器发%
-生部分硬件failure，在许多情况下（但不是全部情况），%
+生部分硬件failure，在许多情况下(但不是全部情况)，%
 立即failover到backup VM将是有利的。这样的failover可以立即%
 为关键VM恢复完整服务，并确保该VM被快速迁离一台可能不可靠的服务器。

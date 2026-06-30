@@ -21,21 +21,25 @@ deterministic state-machine：让它们从相同的初始状态开始，%
 由于大多数服务器或服务都有一些non-deterministic operation，%
 \emph{(译者注：假设你有两台机器，都是单核心，同样的硬件配置，核心跑的同%
 样的程序，然而它们也可能有不同的“输出”。我举个例子，你的代码里有“时间相关”%
-的操作，即使两个机器配置一样且同时开始运行，运行期间也会由于物理因素导致的晶振频率不%
-一致，从而让时钟中断发生的时间不一致，进而导致“时间敏感”的程序输出不同；%
+的操作，比如读取CPU时钟，或者应用程序会读取gettimeofday，这样%
+即使两个机器配置一样且同时开始运行，也会让“时间敏感”的程序输出不同；%
 此外，在操作系统中，随机数也是这样，它实际上综合了来自操作系统的%
 各类“混沌的信息”，这类混沌信息也许一部分来自“时间”，因此也会有不确定性)}%
 因此必须使用额外的协调机制，确保primary服务器和backup服务器保持同步%
 。不过，使primary服务器和backup服务器保持同步所需的额外信息量，%
-远小于primary服务器中正在变化的状态量（主要是内存更新）。%
+远小于primary服务器中正在变化的状态量(主要是内存更新)。%
 
 实现协调机制来确保物理服务器的deterministic execution%
 [14]是困难的，尤其是在处理器频率不断提高时。相比之下，%
 运行在hypervisor之上的VM是实现state-machine方法的极好平台。%
 VM可以被视为一个定义良好的state-machine，%
-其操作就是被虚拟化机器（包括所有设备）的操作。与物理服务器一样，%
-VM也有一些non-deterministic operation（例如读取日时钟%
-，或interrupt投递），因此必须向backup VM发送额外信息，%
+其操作就是被虚拟化机器(包括所有设备)的操作。与物理服务器一样，%
+VM也有一些non-deterministic operation(例如读取日时钟%
+，或interrupt投递\emph{(译者注：对于两台机器，interrupt投递%
+必须完全由primary控制时序，如果任由两台机器执行自己的中断，那么%
+会由于中断插入的位置不同导致状态分岔。常见的请求就是两个机器，设置了10ms的时间中断，%
+后续运行相同的代码，最后可能因为物理因素，比如芯片频率导致中断插入的位置不一样，%
+进而使状态不一致，执行流分岔)}，因此必须向backup VM发送额外信息，%
 确保它保持同步。由于hypervisor完全控制VM的执行，包括所有输入的投递，%
 因此hypervisor能够捕获primary VM上%
 non-deterministic operation的全部必要信息，%
@@ -45,7 +49,7 @@ non-deterministic operation的全部必要信息，%
 我们可以选择直接在机器上部署裸金属hypervisor(不依赖于操作系统)。%
 读者可以把这种裸金属hypervisor理解为一个用于管理VM虚拟化的简易操作系统，%
 在裸机安装这个“微操作系统”后，可以配置它的网络(IP、Mask、Gateway，DNS)，%
-外界可以直接进入它的Web UI进行管理，并且它提供了Restful的API可以创建/销毁/%
+外界可以直接进入它的Web UI进行管理，并且它提供了RESTful的API可以创建/销毁/%
 暂停/快照虚拟机等功能，直接供外界调用，管理该机器的虚拟机资源。%
 \\实际上本文所述的FT系统，需要的主要不是“虚拟化将硬件多路复用”的能力，
 而是利用Hypervisor对VM执行边界的控制能力：截获输入、非确定性事件、虚拟中断、%
@@ -65,14 +69,18 @@ x86 VM。由于VMware vSphere实现了完整的%
 x86 VM，我们能够自动为任何x86操作系统和应用提%
 供fault tolerance能力。使我们能够记录primary VM的执%
 行并确保backup VM完全相同执行的基础技术称为deterministic replay%
-[15]。VMware vSphere Fault Tolerance（%
-FT）基于deterministic replay，但增加了构建完整fault tolerance%
-系统所需的额外协议和功能。除了提供硬件fault tolerance之外，%
+[15]。VMware vSphere Fault Tolerance(%
+FT)基于deterministic replay，但增加了构建完整fault tolerance%
+系统所需的额外协议和功能\emph{(译者注：后续会介绍为了对外表现为%
+“未出现故障切换”，看起来具有输出一致性而设计的\textbf{Output Rule}；%
+以及VM FT检测故障的方法；还有为了防止脑裂采取的额外措施；还有后面复杂的%
+网络/磁盘IO故障切换后的一致性问题如何解决。所有的这些都需要进行讨论)}。%
+除了提供硬件fault tolerance之外，%
 我们的系统还会在failure后自动恢复冗余：%
 它会在本地cluster中任意可用服务器上启动一个新的backup VM。目前，%
 deterministic replay和VMware FT的生产版本都只支持单处理%
-器VM。记录和回放多处理器虚拟机的执行过程仍处于开发阶段，%
-存在严重的性能问题，因为几乎每次对共享内存的访问都可能是不确定的。%
+器VM。记录-重放多核VM的执行过程的版本仍处于开发阶段，%
+它存在严重的性能问题，因为几乎每次对共享内存的访问都可能是不确定的。%
 
 Bressoud和Schneider[3]描述了一个面向HP PA-RISC平台的%
 fault-tolerant VM原型实现。我们的方法与之类似，%
