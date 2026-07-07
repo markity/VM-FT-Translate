@@ -91,11 +91,17 @@ timer/disk-write-completion interrupt、wallclock read、%
 写共享磁盘、写外部设备，还有对外写网络报文。}%
 
 如果backup VM在需要读取下一条log entry时遇到空的log buffer%
-，它会停止执行，直到有新的log entry可用\emph{(译者注：backup并不是%
-收到一条log entry后才批量执行一段代码；确定性指令可以连续replay，只有当%
-执行到需要下一条非确定性结果或事件的位置而对应log entry尚未到达时才会暂停。%
-Bressoud的epoch方案同样让backup保持滞后，并让primary在epoch边界等待ACK；%
-两者的主要差异是事件记录与投递的粒度，而不是双方是否“同时执行一批命令”)}。%
+，它会停止执行，直到有新的log entry可用\emph{(译者注：%
+backup已经没有下一条%
+log entry可读，因此它不知道primary接下来是否会在某个精确指%
+令位置收到interrupt、disk completion、timer interrupt%
+等非确定性事件。即使backup接下来执行的普通指令本身是确定性的，%
+它也不能擅自继续执行，因为下一条非确定性事件可能本应发生在下一条%
+或很近的某条指令之后。backup只有在读到下一条log entry后，才知%
+道可以安全执行到哪个指令位置，并在该位置注入相同的非确定性事件。%
+因此，backup不是“看到确定性代码就能一直跑”，而是“在已知下一条%
+log entry边界的前提下，可以连续执行边界之前的确定性指令”。%
+当log buffer为空时，这个边界未知，所以必须暂停)}。%
 由于backup VM不与外部通信%
 ，这种暂停不会影响VM的任何客户端。类似地，如果primary VM在需要写入%
 log entry时遇到满的log buffer，它必须停止执行，%
@@ -111,6 +117,7 @@ log entry时遇到满的log buffer，它必须停止执行，%
   breaklines=true,
   breakanywhere=true
 ]
+// VM执行循环
 func PrimaryRunLoop(vm *VM) {
     for vm.Running {
         result := RunGuestUntilExitOrEvent(vm)
@@ -164,7 +171,7 @@ func PrimaryRunLoop(vm *VM) {
         }
     }
 }
-
+// 一个单独的线程，作为背景线程运行
 func HandleBackupAck(ackedSeq uint64) {
     primaryLogBuffer.ReleaseThrough(ackedSeq)
 
@@ -297,11 +304,70 @@ replay primary执行流时，会在同一个执行点replay到这个quiescing op
 
 \subsection{磁盘IO的实现问题(重要，难点)}
 
+\emph{译者注：此处我解释磁盘IO工作流程。guest OS启动并初始化磁盘驱动时，会在%
+guest物理内存中分配Descriptor Table、Available Ring和Used Ring。%
+Descriptor Table用于描述请求涉及的内存buffer；Available Ring由guest驱动%
+写入、虚拟设备读取，用于发布新请求；Used Ring由虚拟设备写入、guest驱动%
+读取，用于返回已经完成的请求。%
+\\Descriptor Table中的一个descriptor包含buffer的guest物理地址、长度、%
+访问方向以及下一个descriptor的编号。一个磁盘请求不一定只使用一个%
+descriptor，而可能由一条descriptor chain组成。例如，一个write请求通常%
+包含请求头、待写数据和完成状态三个部分：请求头和待写数据由guest写入、%
+设备读取，完成状态则由设备写入、guest读取。guest驱动会记录descriptor %
+chain的head ID，以便之后根据该ID找到原始请求。%
+\\Available Ring中保存的不是完整IO请求，而是descriptor chain的head ID。%
+avail.idx是位于guest物理内存中的16位计数器，由guest驱动维护，%
+并不是一个MMIO寄存器。假设avail.idx初始值为0，guest准备提交%
+三个分别由descriptor 7、12和4描述的请求，那么guest会依次执行%
+avail.ring[0]=7、avail.ring[1]=12和%
+avail.ring[2]=4。填写完descriptor和Available Ring后，guest必须%
+执行适当的memory barrier，保证设备在观察到新的avail.idx时，%
+前面的descriptor内容已经可见；随后guest把avail.idx更新为3，%
+最后写doorbell MMIO寄存器，通知设备有新的请求可供处理。%
+\\设备内部会维护一个类似lastAvailIdx的消费位置。收到doorbell后，%
+设备比较自己的lastAvailIdx和guest写入的avail.idx，%
+然后依次读取尚未消费的Available Ring元素，并根据其中的head ID遍历%
+对应的descriptor chain。Available Ring是循环数组，因此实际数组位置为%
+逻辑index对queue size取模；但是在设备把请求写入Used Ring以前，guest不能%
+修改或复用该请求占用的descriptor及相关buffer。如果队列已经没有空闲%
+descriptor，guest驱动必须暂时把新请求保留在自己的软件队列中，等待旧请求%
+完成，而不能直接覆盖仍由设备使用的descriptor。%
+\\在协议没有规定额外顺序约束的情况下，设备可以并发处理多个请求，%
+其物理执行顺序和completion顺序不一定与Available Ring中的提交顺序相同。%
+例如，三个请求的提交顺序可能是7、12、4，但实际完成顺序可能是12、4、7。%
+如果两个write访问同一个sector，而guest又没有通过等待前一个请求完成、%
+FLUSH、FUA、barrier或其他协议机制建立顺序关系，那么设备不保证这两个%
+write按照提交顺序生效，最终sector中保存的可能是任意一个write的数据。%
+这里更准确的说法是最终结果不受虚拟磁盘协议保证，而不是发生了类似%
+C/C++ undefined behavior的任意行为。%
+\\某个请求完成时，设备首先完成对descriptor所描述buffer的访问。对于read，%
+设备会把读取到的数据写入device-writable data buffer；对于read和write，%
+设备还会把成功或失败状态写入对应的status buffer。完成这些写入并执行%
+必要的memory barrier后，设备把该请求的descriptor chain head ID写入%
+used.ring[used.idx \% queueSize]，随后增加used.idx，%
+并根据当前的通知策略向guest OS发送interrupt。%
+\\guest磁盘驱动维护一个自己的lastUsed。收到interrupt后，驱动会%
+处理从lastUsed到最新used.idx之间的所有Used Ring元素。%
+每个Used Ring元素都包含原请求的descriptor chain head ID，因此驱动可以%
+通过该ID找到原始block IO请求，检查status，使用read返回的数据，完成对应%
+的IO，唤醒等待线程，并回收descriptor和buffer。Used Ring中的数组位置%
+不需要与Available Ring中的提交位置一一对应；真正用于匹配请求和completion%
+的是descriptor ID。只有在Used Ring表明请求已经完成后，guest才能安全地%
+复用该请求占用的descriptor。%
+\\一个completion也不一定对应一次interrupt。为了减少interrupt和VM-exit%
+开销，设备可以连续完成多个请求、填写多个Used Ring元素，然后只发送一次%
+interrupt。guest收到这次interrupt后，会通过used.idx发现并处理%
+全部新增的completion。%
+\\在虚拟机中，上述设备行为通常由VMM中的虚拟磁盘设备实现。真实host IO%
+完成后，VMM把read数据和status写入guest memory，更新Used Ring和%
+used.idx，然后向guest注入虚拟磁盘interrupt。对于VMware FT，%
+Primary VMM还需要记录IO completion的结果及其在guest指令流中的投递位置；%
+Backup VMM正常replay时不会执行真实磁盘IO，而是在收到并replay相应日志后，%
+写入相同的数据和status、更新相同的Used Ring，并在相同的guest执行位置%
+注入interrupt。}%
+
 与磁盘IO相关的实现问题有许多微妙之处。首先，由于disk operation是非%
-阻塞的，因此可以并行执行\emph{(译者注：现代网卡发送也类似：驱动提交packet
-descriptor，网卡通过DMA读取packet并发送，随后报告完成。因此，系统可以
-同时保持多个outstanding disk/network request)}，%
-同时访问同一disk location的%
+阻塞的，因此可以并行执行，同时访问同一disk location的%
 并发disk operation可能导致non-determinism。此外，%
 我们的磁盘IO实现使用DMA直接读写VM的内存，因此同时访问同一内存页的并发磁盘%
 操作也可能导致non-determinism。我们的解决方案通常是检测任何这样的%
@@ -402,27 +468,41 @@ guest随后修改原内存页，这个write请求的数据内容也保持稳定�
 hypervisor不会让真实磁盘DMA直接写入guest memory，而是先读入bounce buffer，%
 等到一个确定的I/O completion投递点时，才把bounce buffer中的数据复制到%
 guest memory，并更新虚拟磁盘设备状态、向guest注入完成中断。%
-在primary上，PendingDiskIO会被真正提交给共享存储；物理I/O完成后，%
-该请求并不会立刻从pending表中删除，因为guest还没有看见completion。%
-只有当hypervisor在确定执行点把completion交付给guest之后，该I/O才算从%
-pending disk I/O状态结束。此时hypervisor还会把这个completion事件及其确定执行%
-位置记录到FT log中，使backup可以在相同的guest执行点交付同一个completion。%
-在backup上，guest提交I/O的动作也会被replay出来，因此backup hypervisor也会创建%
-对应的PendingDiskIO记录；但在正常backup状态下，它通常不会把这些I/O真正%
-发往共享存储，而只是维护虚拟磁盘设备中的pending状态。当backup replay到%
-primary发来的completion log entry时，才按照log在相同执行点更新guest memory%
-和虚拟设备状态，并把completion交付给guest；此后该I/O也从backup的pending%
-表中移除。%
-如果primary发生failure，backup首先replay完已经收到的FT log，然后go live。%
-此时backup扫描自己的pending disk I/O表：凡是已经replay到completion并交付%
-给guest的I/O，不需要重发；凡是尚未向guest交付completion的I/O，则按照表中%
-保存的原始I/O描述重新提交给共享存储。对于write，重新提交的是bounce buffer%
-中保存的同一份数据和同一批disk block；对于read，重新读取的是同一批disk block，%
-完成后再把结果交付给guest。这里的重发不是从guest应用或文件系统层重新执行%
-一次操作，而是在hypervisor层重新提交已经存在于虚拟磁盘设备状态中的%
-pending block I/O。由于系统已经消除了相关I/O竞争，并且每个I/O都明确指定了访问的%
-guest memory范围和disk block范围，因此这些普通block read/write可以在%
-failover时被安全地重新执行。}%
+在primary上，hypervisor首先根据guest提交的请求建立PendingDiskIO。%
+对于write，hypervisor会立即把guest memory中的待写数据复制到bounce %
+buffer，从而固定本次write的数据内容；对于read，则为返回数据准备bounce %
+buffer。需要注意，read请求本身不会修改外部状态，因此primary可以把真实read%
+提交给共享存储，但是read返回的数据、完成状态和completion投递时机都属于%
+non-deterministic input，必须通过FT log复制给backup。%
+\\磁盘write则不同。对shared storage的write会改变外部世界，因此属于output，%
+必须遵循Output Rule。primary不能在建立PendingDiskIO之后立即提交真实write，%
+而是要先在FT log中加入一条与该output关联的特殊log entry，并把该entry以及%
+此前所有相关日志发送给backup。只有收到backup的ACK，确认backup已经收到足够%
+的日志后，primary才可以把bounce buffer中的数据真正写入shared storage。%
+这个ACK只表示backup已经收到日志，不要求backup已经replay到该write的位置；%
+即使backup仍存在执行滞后，它也可以在primary故障后继续replay，并最终恢复到%
+能够重建该pending write的状态。%
+\\物理I/O完成后，primary VMM会先捕获completion状态；对于read，还会保存%
+返回到bounce buffer中的数据。随后primary记录completion结果及其在guest%
+指令流中的确定投递位置，并生成对应的FT log entry。完成日志记录后，%
+primary才在该执行位置把read数据复制到guest memory，更新虚拟磁盘设备状态，%
+并向guest注入completion interrupt。只有completion已经交付给guest以后，%
+该请求才从primary的pending disk I/O状态中结束。%
+\\在backup上，guest提交I/O的动作会通过deterministic replay再次执行，因此%
+Backup VMM能够恢复出对应的虚拟磁盘请求和pending状态。正常replay期间，%
+Backup不会把这些read或write真正提交给shared storage。对于write，Backup%
+收到Output Rule所需的日志时只保存日志并返回ACK，不会因此执行真实write；%
+当它replay到primary发送的completion log entry时，才在相同的guest执行位置%
+写入相同的read数据和completion状态，更新虚拟设备，并向guest注入相同的%
+interrupt。完成交付后，对应请求才从Backup的pending状态中移除。%
+\\如果primary发生failure，Backup首先replay完已经收到的FT log，然后经过%
+防止split-brain的仲裁过程进入go-live状态。此时它扫描仍然pending的磁盘I/O：%
+已经通过completion log交付给guest的请求不再执行；尚未交付completion的请求%
+则根据保存的请求状态重新提交给shared storage。对于write，重新提交的是相同%
+bounce buffer中的数据和相同disk block；对于read，则重新读取相同的disk %
+block。这样，无论旧primary尚未提交I/O、已经提交但尚未完成，还是已经完成但%
+completion log尚未到达Backup，新primary都能通过重新执行pending I/O获得一个%
+明确的completion。}%
 
 \subsection{网络IO的实现问题}
 

@@ -206,7 +206,8 @@ primary VM原本继续执行时非常不同的方式执行。%
 
 \begin{quote}
 \noindent\textbf{Output Rule:}在backup VM收到并acknowledge与产生该%
-output的操作相关联的log entry之前，primary VM不得向外部世界发送该输出。%
+output的操作相关联的log entry之前，primary VM不得向外部世界发送该输出%
+(向外部世界发送输出包括网络packet输出和磁盘操作)。%
 \end{quote}
 
 如果backup VM已经收到所有log entry，包括产生输出的操作对应的log %
@@ -253,8 +254,12 @@ failure无关的原因被丢弃，因此network infrastructure、%
 操作系统和应用都被编写成能够补偿丢包。%
 \\\emph{译者注：
 \\这里并不能保证packet恰好发送一次。primary可能在最后一个packet%
-真正发出之前或之后failure，因此客户端可能观察到丢包或重复包。%
-Output Rule保证的是：只要某个输出已经对外可见，backup就拥有足够的%
+真正发出之前或之后failure，因此客户端可能观察到丢包或一个包。%
+backup决定上任后会切断log channel，然后重放log entry，%
+对于发送网络报文的log entry直接忽略，因此这可能丢包，或者发出一个包；
+当然重放发送网络报文的log entry时重新发包也是正确的实现，在这种实现中，%
+真实发出一个包或者两个包都是有可能的。无论是哪种实现，都是正确的。%
+\\\\Output Rule保证的是：只要某个输出已经对外可见，backup就拥有足够的%
 log，可以在failover后到达与该输出一致的状态。TCP等网络协议本来就会%
 处理丢包、重复和乱序，因此FT层不需要判断最后一个packet究竟是否发出。%
 相比于本文主要描述的共享磁盘(它本质上也是一种输出设备)，%
@@ -262,13 +267,15 @@ log，可以在failover后到达与该输出一致的状态。TCP等网络协议
 
 \subsection{检测并响应failure}
 
-如上所述，如果另一个VM看起来已经failure，primary VM和%
+如上所述，如果另一个VM看起来已经failure\emph{(primary%
+和backup都需要感知对方，对面挂了就采取一定措施)}，primary VM和%
 backup VM必须快速响应。如果backup VM failure，%
 primary VM将go live，也就是离开recording mode(因此停止%
 在logging channel上发送log entry)并开始正常执行%
 \emph{(译者注：实际上这里说primary go live用词不妥，它的意思%
 仅仅是退出recording模式，变成独立运行/不受保护的模式，%
-并不代表之前就不是“live”的)}。%
+并不代表之前就不是“live”的，它仅仅是说后续不再需要得到backup的ack确认后%
+才能对外输出，而是放弃容错，确保至少能对外提供服务)}。%
 如果primary VM failure，backup VM也应类似地go live，%
 但这个过程稍微复杂一些。由于backup VM的执行存在滞后，%
 它很可能已经接收并acknowledge了若干log entry，%
@@ -318,16 +325,16 @@ shared storage上。因此，使用shared storage解决%
 split-brain情况不会引入额外的不可用性。%
 \\\emph{译者注：论文中的shared storage不是由guest OS%
 直接访问的网络盘，也不是挂载在guest OS文件系统层中的%
-对象。它通常是hypervisor层可以共同访问%
-的共享存储，例如SAN、iSCSI、FC或NFS datastore。%
-VM的virtual disk存放在该shared storage上，%
-hypervisor再把这个virtual disk模拟成一块普通磁%
-盘设备呈现给guest OS。guest OS看到的是类似/dev/sda%
-这样的本地块设备，并在其上挂载自己的文件系统；但真正%
-把虚拟磁盘I/O映射到shared storage读写的是%
-hypervisor/VMkernel，而不是guest OS的网络栈。
-\\可见test-and-set的操作也是guest OS无感知的，%
-完全由hypervisor层进行。}%
+对象。你可以把它简单理解为仅能在hypervisor层使用的%
+共享块存储，它的接口很简单，只有Read(offset, length)%
+和Write(offset, data)，看起来就是一块大的共享数组。%
+hypervisor再把这个共享存储模拟成一个真正的磁盘设备，guest OS%
+感知到的仍然是/dev/sda这样的本地块设备。%
+\\\\当操作系统尝试提交IO请求的时候，会向ring放置IO Req，%
+然后idx++，写入MMIO。VM会截获这个MMIO写入事件然后VM-Exit让%
+VM获得控制权，此时它就会把guest OS的磁盘IO Req转换为共享存储%
+读写。此外，test-and-set操作也是在hypervisor层进行的，%
+guest OS无感知。}%
 
 设计的最后一个方面是，一旦发生failure并且其中一个VM已经go live，%
 VMware FT会通过在另一台host上启动新的backup VM来自动恢复冗余。%
